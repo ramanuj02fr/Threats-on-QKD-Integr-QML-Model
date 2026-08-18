@@ -14,3 +14,5 @@ def compute_qber(alice_bits, bob_bits, alice_bases, bob_bases):
 
     qber = errors / len(sifted_alice)
     return sifted_alice, sifted_bob, qber
+
+print("QBER module loaded successfully.")
