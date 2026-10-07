@@ -4,7 +4,7 @@ Clean BB84 QBER dataset generator (100,000 batches).
 "Clean" = unpoisoned class: BB84, 8-bit keys, Eve intercept-resend attack on every key.
 Each key's mismatch count between Alice and Bob follows Binomial(8, 0.25).
 
-Output (one CSV per batch size, default 500 keys/batch) -> data/clean_batches_<K>keys.csv
+Output (one CSV per batch size, default 500 keys/batch) -> paper/clean_batches_<K>keys.csv
   batch_id, label(=0, clean), keys_per_batch,
   count_0 .. count_8   : number of keys in the batch with exactly k mismatched bits (lossless summary)
   mean_qber, std_qber, skew_qber, kurtosis_qber,
@@ -57,10 +57,16 @@ def generate_mismatches(num_batches, keys_per_batch, seed):
     return out
 
 
-def batch_table(mb, keys_per_batch):
+def batch_counts(mb, keys_per_batch):
+    """(n_batches, 9) array: number of keys per batch with exactly k mismatched bits."""
     nb = len(mb) // keys_per_batch
     mbr = mb.reshape(nb, keys_per_batch)
-    counts = np.stack([(mbr == k).sum(axis=1) for k in range(KEY_LENGTH + 1)], axis=1).astype(np.int64)
+    return np.stack([(mbr == k).sum(axis=1) for k in range(KEY_LENGTH + 1)], axis=1).astype(np.int64)
+
+
+def features_from_counts(counts, keys_per_batch):
+    """15 per-batch features computed from the count_k columns (works for clean AND poisoned files)."""
+    counts = np.asarray(counts)
     fracs = counts / keys_per_batch
     q = np.arange(KEY_LENGTH + 1) / KEY_LENGTH                      # QBER value of each bin
     mean = fracs @ q
@@ -72,14 +78,19 @@ def batch_table(mb, keys_per_batch):
     kurt = np.where(std < 1e-12, 0.0, (fracs * c ** 4).sum(axis=1) / safe ** 4)
     chi2 = keys_per_batch * ((fracs - PMF) ** 2 / PMF).sum(axis=1)
     ks = np.abs(np.cumsum(fracs, axis=1) - CDF).max(axis=1)
-    data = {"batch_id": np.arange(nb), "label": 0, "keys_per_batch": keys_per_batch}
-    for k in range(KEY_LENGTH + 1):
-        data[f"count_{k}"] = counts[:, k]
-    data.update({"mean_qber": mean, "std_qber": std, "skew_qber": skew, "kurtosis_qber": kurt})
+    data = {"mean_qber": mean, "std_qber": std, "skew_qber": skew, "kurtosis_qber": kurt}
     for k in range(KEY_LENGTH + 1):
         data[f"frac_qber_{k / KEY_LENGTH:.3f}"] = fracs[:, k]
     data.update({"chi2_stat": chi2, "ks_stat": ks})
     return pd.DataFrame(data)
+
+
+def batch_table(mb, keys_per_batch):
+    counts = batch_counts(mb, keys_per_batch)
+    head = {"batch_id": np.arange(len(counts)), "label": 0, "keys_per_batch": keys_per_batch}
+    for k in range(KEY_LENGTH + 1):
+        head[f"count_{k}"] = counts[:, k]
+    return pd.concat([pd.DataFrame(head), features_from_counts(counts, keys_per_batch)], axis=1)
 
 
 def write_raw(mb, keys_per_batch, path):
@@ -99,7 +110,7 @@ def main():
     ap.add_argument("--batches", type=int, default=100_000)
     ap.add_argument("--keys-per-batch", type=int, nargs="+", default=[500])
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--out", default="data")
+    ap.add_argument("--out", default="paper")
     ap.add_argument("--raw", action="store_true", help="also write the per-key raw CSV (HUGE)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
